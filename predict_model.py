@@ -4,19 +4,17 @@ import numpy as np
 import datetime
 from sklearn.preprocessing import MinMaxScaler
 import tensorflow as tf
-from keras.api.layers import LSTM, Dense, Dropout
-from keras.api.models import Sequential
+from keras.api.models import load_model
 import matplotlib.pyplot as plt
 
-
-def fetch_binance_data(symbol="BTC/USDT", timeframe="15m"):
+def fetch_binance_data(symbol="BTC/USDT", timeframe="1d"):
     exchange = ccxt.binance()
     
-    # Отримуємо часові мітки для вчорашнього дня
+    # Отримуємо часові мітки для останніх 2 років
     today = datetime.datetime.now()
-    yesterday = today - datetime.timedelta(days=1)
-    start_timestamp = int(yesterday.replace(hour=0, minute=0, second=0).timestamp() * 1000)
-    end_timestamp = int(today.replace(hour=0, minute=0, second=0).timestamp() * 1000)
+    start_date = today - datetime.timedelta(days=730)
+    start_timestamp = int(start_date.timestamp() * 1000)
+    end_timestamp = int(today.timestamp() * 1000)
     
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since=start_timestamp)
@@ -27,10 +25,6 @@ def fetch_binance_data(symbol="BTC/USDT", timeframe="15m"):
         df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         
-        # Фільтруємо тільки вчорашні дані
-        df = df[(df["timestamp"] >= pd.to_datetime(start_timestamp, unit="ms")) &
-                (df["timestamp"] < pd.to_datetime(end_timestamp, unit="ms"))]
-        
         if df.empty:
             raise ValueError("Недостатньо історичних даних!")
         
@@ -38,7 +32,6 @@ def fetch_binance_data(symbol="BTC/USDT", timeframe="15m"):
     except Exception as e:
         print(f"Помилка отримання даних з Binance: {e}")
         return pd.DataFrame()
-
 
 df = fetch_binance_data()
 if df.empty:
@@ -48,47 +41,24 @@ if df.empty:
 scaler = MinMaxScaler(feature_range=(0, 1))
 df["close_scaled"] = scaler.fit_transform(df["close"].values.reshape(-1, 1))
 
-
-def create_sequences(data, seq_length=24):  # Використовуємо 24 години для прогнозу
+def create_sequences(data, seq_length=60):  # Використовуємо 60 днів для прогнозу
     X, y = [], []
     for i in range(len(data) - seq_length):
         X.append(data[i:i + seq_length])
         y.append(data[i + seq_length])
     return np.array(X), np.array(y)
 
-
-seq_length = 24
+seq_length = 60
 X, y = create_sequences(df["close_scaled"].values, seq_length)
 if len(X) == 0:
     raise SystemExit("Недостатньо даних для створення навчального набору.")
 
-# Поділ на тренувальні та тестові дані
-split = int(len(X) * 0.8)
-X_train, y_train = X[:split], y[:split]
-X_test, y_test = X[split:], y[split:]
-
-X_train = np.reshape(X_train, (X_train.shape[0], X_train.shape[1], 1))
-X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
-
-# Створюємо LSTM-модель
-model = Sequential([
-    LSTM(64, return_sequences=True, input_shape=(seq_length, 1)),
-    Dropout(0.2),
-    LSTM(64, return_sequences=False),
-    Dropout(0.2),
-    Dense(32, activation="relu"),
-    Dense(1)
-])
-
-model.compile(optimizer="adam", loss="mse")
-model.summary()
-
-# Тренуємо модель
-history = model.fit(X_train, y_train, epochs=100, batch_size=16, validation_data=(X_test, y_test))
+# Завантажуємо збережену модель
+model = load_model('C:/Users/Vanyk/Desktop/crypto_vision/btc_price_model.keras')
 
 # Прогнозуємо на сьогодні
-future_input = X_test[-1].reshape(1, seq_length, 1)
-future_steps = 24  # Прогноз на наступні 24 години
+future_input = X[-1].reshape(1, seq_length, 1)
+future_steps = 365  # Прогноз на наступні 365 днів
 future_predictions = []
 
 for _ in range(future_steps):
@@ -100,16 +70,26 @@ for _ in range(future_steps):
 future_predictions = scaler.inverse_transform(np.array(future_predictions).reshape(-1, 1))
 
 # Генеруємо часові мітки для прогнозу
-future_timestamps = [df["timestamp"].iloc[-1] + datetime.timedelta(hours=i) for i in range(1, future_steps + 1)]
+last_timestamp = df["timestamp"].iloc[-1]
+if last_timestamp.year > datetime.datetime.now().year:
+    last_timestamp = datetime.datetime.now()
+
+future_timestamps = [last_timestamp + datetime.timedelta(days=i) for i in range(1, future_steps + 1)]
 
 # Будуємо графік
 plt.figure(figsize=(12, 6))
 plt.plot(df["timestamp"], df["close"], label="Actual Price", color='blue')
-plt.plot(future_timestamps, future_predictions, marker='o', linestyle='-', color='red', label='Predicted Price')
+plt.plot(future_timestamps, future_predictions, marker='o', linestyle='-', color='red', label='Predicted Price for Next Year')
 plt.xlabel("Time")
 plt.ylabel("Price")
 plt.legend()
-plt.title("BTC Price Prediction for Today")
+plt.title("BTC Price Prediction for Next Year")
 plt.xticks(rotation=45)
 plt.grid()
+
+# Форматування осей
+plt.gca().xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter('%Y-%m'))
+plt.gca().xaxis.set_major_locator(plt.matplotlib.dates.MonthLocator(interval=1))
+plt.gcf().autofmt_xdate()
+
 plt.show()
